@@ -612,6 +612,8 @@ m_caster((info->HasAttribute(SPELL_ATTR6_CAST_BY_CHARMER) && caster->GetCharmerO
 
     m_channelTargetEffectMask = 0;
 
+    m_spellFlags = SPELL_FLAG_NORMAL;
+
     // Determine if spell can be reflected back to the caster
     // Patch 1.2 notes: Spell Reflection no longer reflects abilities
     m_canReflect = m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MAGIC && !m_spellInfo->HasAttribute(SPELL_ATTR0_ABILITY)
@@ -746,7 +748,10 @@ void Spell::SelectExplicitTargets()
                     break;
             }
             if (redirect && (redirect != target))
+            {
                 m_targets.SetUnitTarget(redirect);
+                m_spellFlags |= SPELL_FLAG_REDIRECTED;
+            }
         }
     }
 }
@@ -2104,6 +2109,8 @@ void Spell::AddUnitTarget(Unit* target, uint32 effectMask, bool checkIfValid /*=
 
         // Increase time interval for reflected spells by 1.5
         targetInfo.timeDelay += targetInfo.timeDelay >> 1;
+
+        m_spellFlags |= SPELL_FLAG_REFLECTED;
     }
     else
         targetInfo.reflectResult = SPELL_MISS_NONE;
@@ -2546,10 +2553,15 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
         if (effectMask & (1 << i) && m_spellInfo->Effects[i].IsUnitOwnedAuraEffect())
             aura_effmask |= 1 << i;
 
+    Unit * originalCaster = GetOriginalCaster();
+    if (!originalCaster)
+        originalCaster = m_caster;
+    
     // Get Data Needed for Diminishing Returns, some effects may have multiple auras, so this must be done on spell hit, not aura add
-    m_diminishGroup = GetDiminishingReturnsGroupForSpell(m_spellInfo, m_triggeredByAuraSpell != nullptr);
-    if (m_diminishGroup && aura_effmask)
+    // Diminishing must not affect spells, casted on self
+    if ((originalCaster && aura_effmask && originalCaster != unit) || (m_spellFlags & SPELL_FLAG_REFLECTED))
     {
+        m_diminishGroup = GetDiminishingReturnsGroupForSpell(m_spellInfo, m_triggeredByAuraSpell);
         m_diminishLevel = unit->GetDiminishing(m_diminishGroup);
         DiminishingReturnsType type = GetDiminishingReturnsGroupType(m_diminishGroup);
         // Increase Diminishing on unit, current informations for actually casts will use values above
@@ -4835,7 +4847,7 @@ SpellCastResult Spell::CheckCast(bool strict)
                     if (DynamicObject* dynObj = m_caster->GetDynObject(m_triggeredByAuraSpell->Id))
                         losTarget = dynObj;
 
-                if (!m_spellInfo->HasAttribute(SPELL_ATTR2_CAN_TARGET_NOT_IN_LOS) && !DisableMgr::IsDisabledFor(DISABLE_TYPE_SPELL, m_spellInfo->Id, NULL, SPELL_DISABLE_LOS) && !target->IsWithinLOSInMap(losTarget))
+                if (!m_spellInfo->HasAttribute(SPELL_ATTR2_CAN_TARGET_NOT_IN_LOS) && !DisableMgr::IsDisabledFor(DISABLE_TYPE_SPELL, m_spellInfo->Id, NULL, SPELL_DISABLE_LOS) && !target->IsWithinLOSInMap(losTarget) && !(m_spellFlags & SPELL_FLAG_REDIRECTED))
                     return SPELL_FAILED_LINE_OF_SIGHT;
             }
         }
@@ -6520,7 +6532,7 @@ bool Spell::CheckEffectTarget(Unit const* target, uint32 eff, Position const* lo
                     caster = m_caster->GetMap()->GetGameObject(m_originalCasterGUID);
                 if (!caster)
                     caster = m_caster;
-                if (target != m_caster && !target->IsWithinLOSInMap(caster))
+                if (target != m_caster && !target->IsWithinLOSInMap(caster) && !(m_spellFlags & SPELL_FLAG_REDIRECTED))
                     return false;
             }
             break;
